@@ -111,7 +111,7 @@ Our parameter ranges are **anchored to publicly disclosed values**. Below we doc
 
 | Observation | Source | How We Model It |
 |-------------|--------|-----------------|
-| Outsourced capacity contracts during crises | Gillespie 2018 | $\bar{v}_{ld\omega} = \bar{v}^0_{ld} \exp\{-\zeta_1 Z_{ld\omega} - \zeta_2 \delta_{ld\omega}\}$ |
+| Outsourced capacity contracts during crises | Gillespie 2018 | $\bar{v}_{ld\omega} = \bar{v}^0_{ld}\,(1 + \zeta_1 (Z_{d\omega}-1)^{+} + \zeta_2 \delta_{d\omega})^{-1}$ |
 | BPOs charge 20-40% premium for English | Industry surveys | Wage multipliers by language pool |
 | Outsourcing limited to frontline work | Roberts 2019 | Only tier-1 capacity can be outsourced |
 
@@ -216,7 +216,7 @@ Each instance contains $|\Omega| = 400$ scenarios sampled via:
    - Volume: Lognormal with $\sigma_Z$
    - Detection shift: Gamma($\kappa_\delta, \beta_\delta$)
 3. **Temporal persistence:** AR(1) with coefficient $\varrho$
-4. **Outsourcing contraction:** $\bar{v}_{ld\omega} = \bar{v}^0_{ld} \exp\{-\zeta_1 Z_{ld\omega} - \zeta_2 \delta_{ld\omega}\}$
+4. **Outsourcing contraction:** $\bar{v}_{ld\omega} = \bar{v}^0_{ld}\,(1 + \zeta_1 (Z_{d\omega}-1)^{+} + \zeta_2 \delta_{d\omega})^{-1}$
 
 **Outcome:** 400 day-by-day paths spanning typical operations, seasonal peaks, and rare joint shocks.
 
@@ -275,8 +275,8 @@ Every instance is fully reproducible:
 
 ```bash
 # Clone the repository
-git clone https://github.com/[REPOSITORY-TO-BE-ADDED]
-cd content-moderation-planning
+git clone https://github.com/yinhaosjtu/content-moderation-capacity
+cd content-moderation-capacity
 
 # Install dependencies
 pip install -r requirements.txt
