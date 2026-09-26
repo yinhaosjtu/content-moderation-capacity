@@ -1,3 +1,17 @@
+"""
+Ablation study for Benders decomposition enhancements and heuristic stages.
+
+Panel 1 (Benders ablation): Runs Medium instances under eight Benders
+configurations that each disable one enhancement (block structure, warm-start,
+incumbent cuts, root/tree cuts, final purge) and reports MIP gap and wall time.
+
+Panel 2 (Heuristic ablation): Incrementally enables the three heuristic stages
+(H0 base -> H1 multistart -> H2 integer refinement -> H3 local search) on
+Small and Medium instances, reporting relative percentage deviation (RPD) from
+exact Benders/L-shaped reference objectives and wall time.
+
+Results are written to an Excel workbook with one sheet per panel.
+"""
 
 import gc
 import json
@@ -14,6 +28,7 @@ from Solvers import solver_benders as sb
 from Solvers import solver_heuristic as sh
 
 
+# Gurobi integer status codes mapped to human-readable labels.
 _CACHE_INTEGER_STATUSES = {
     2: "ok",
     3: "infeasible",
@@ -32,6 +47,11 @@ _CACHE_INTEGER_STATUSES = {
     17: "oom",
 }
 
+
+# ---------------------------------------------------------------------------
+# JSONL cache: each line stores {"unit": ..., "instance": ..., "result": ...}.
+# Keyed by (unit, instance) to allow resuming interrupted experiment batches.
+# ---------------------------------------------------------------------------
 
 def cache_identity(unit, instance):
     return str(unit), str(instance)
@@ -58,6 +78,7 @@ def load_cache(path):
 
 
 def _cache_json_default(value):
+    """JSON serializer fallback: convert numpy scalars via .item()."""
     item = getattr(value, "item", None)
     if callable(item):
         return item()
@@ -65,6 +86,7 @@ def _cache_json_default(value):
 
 
 def store_cache(path, unit, instance, result):
+    """Append one result to the JSONL cache, ensuring trailing newline."""
     cache_dir = os.path.dirname(path)
     if cache_dir and not os.path.exists(cache_dir):
         os.makedirs(cache_dir, exist_ok=True)
@@ -89,7 +111,13 @@ def store_cache(path, unit, instance, result):
         os.fsync(handle.fileno())
 
 
+# ---------------------------------------------------------------------------
+# Solver status normalization: maps Gurobi codes, string labels, elapsed-time
+# heuristics, and exception types into a uniform status vocabulary.
+# ---------------------------------------------------------------------------
+
 def exception_status(error):
+    """Classify a solver exception as 'oom', 'time_limit', or 'error'."""
     text = "{0}: {1}".format(type(error).__name__, error).lower()
     oom_markers = (
         "out of memory", "out-of-memory", "memory limit", "mem_limit",
@@ -112,6 +140,7 @@ def error_text(error):
 
 
 def normalized_solver_status(result, time_limit=None, time_field="time"):
+    """Return a canonical status string from a raw solver result dict."""
     if not isinstance(result, dict):
         return "error"
     raw = result.get("status")
@@ -137,6 +166,7 @@ def normalized_solver_status(result, time_limit=None, time_field="time"):
         elapsed = float(elapsed)
     except (TypeError, ValueError):
         elapsed = None
+    # Infer time_limit when the solver did not report an explicit status.
     if status is None and time_limit is not None and elapsed is not None:
         threshold = max(
             float(time_limit) - max(1.0, 0.001 * float(time_limit)), 0.0)
@@ -150,6 +180,11 @@ def normalized_solver_status(result, time_limit=None, time_field="time"):
 def is_cacheable_result(result):
     return isinstance(result, dict) and result.get("_status", "ok") != "error"
 
+
+# ---------------------------------------------------------------------------
+# Experiment paths and parameters
+# ---------------------------------------------------------------------------
+
 INSTANCE_DIR = "instances"
 RESULT_FILE = "results_ablation.xlsx"
 CACHE_FILE = "cache/cache_ablation_experiment.jsonl"
@@ -158,6 +193,7 @@ COMPARATIVE_CACHE_FILE = "cache/cache_comparative_experiment.jsonl"
 
 
 def discover_ordinals(directory, scale):
+    """Scan directory for instance files matching '{scale}_NN.json'."""
     ordinals = []
     prefix = scale + "_"
     for name in os.listdir(directory):
@@ -170,16 +206,22 @@ def discover_ordinals(directory, scale):
     return sorted(set(ordinals))
 
 
+# Benders solver defaults
 TIME_LIMIT = 3600.0
 MIP_GAP = 0.0
 THREADS = 0
 HEURISTIC_TIME_LIMIT = 300.0
+
+# Cross-validation tolerances for reference objectives
 REFERENCE_REL_TOL = 1e-5
 REFERENCE_GAP_TOL_PERCENT = 1e-3
+
 BENDERS_ABLATION_INSTANCE_LIMITS = {"Medium": 10, "Small": 10}
 
 N_DAYS_MEDIUM = 10
 
+# Each tuple: (config_name, param_overrides).
+# "full_BBC" is the full method; the rest each disable one enhancement.
 MEDIUM_CONFIGS = [
     ("full_BBC", {}),
     ("block_Bhalf", {"recourse_parts": N_DAYS_MEDIUM // 2,
@@ -197,9 +239,15 @@ PANELS = [
     ("medium_ablation", "Medium", "M", MEDIUM_CONFIGS),
 ]
 
+# Match the production heuristic configuration from comparative_experiment.py:
+# SciPy backend and 4 worker threads, so ablation timings are directly
+# comparable with the main benchmark table.
+HEURISTIC_THREADS = 4
+HEURISTIC_LP_BACKEND = "scipy"
+
 HEURISTIC_BASE_PARAMS = {
     "time_limit": HEURISTIC_TIME_LIMIT,
-    "threads": THREADS,
+    "threads": HEURISTIC_THREADS,
     "output": False,
     "root_rounds": 10,
     "integer_rounds": 6,
@@ -209,8 +257,11 @@ HEURISTIC_BASE_PARAMS = {
     "master_gap": 0.01,
     "quality_gap": 0.005,
     "adaptive": True,
+    "lp_backend": HEURISTIC_LP_BACKEND,
 }
 
+# Heuristic stages: H0 (LP root only) -> H1 (+multistart) -> H2 (+integer
+# refinement) -> H3 (+local search = full heuristic).
 HEURISTIC_CONFIGS = [
     (
         "H0",
@@ -254,7 +305,12 @@ YELLOW = PatternFill(start_color="FFFFFF00", end_color="FFFFFF00",
                      fill_type="solid")
 
 
+# ---------------------------------------------------------------------------
+# Helpers: instance discovery, Excel formatting, numeric conversion
+# ---------------------------------------------------------------------------
+
 def instance_paths(scale, label_prefix):
+    """Return list of (display_label, file_path) for the given scale."""
     out = []
     ordinals = discover_ordinals(INSTANCE_DIR, scale)
     for i, ordinal in enumerate(ordinals, start=1):
@@ -283,6 +339,7 @@ def render(value, sci=False):
 
 
 def cap_report_time(value, time_limit=TIME_LIMIT):
+    """Clamp elapsed time to [0, time_limit]; return None for invalid input."""
     if value is None:
         return None
     try:
@@ -295,6 +352,7 @@ def cap_report_time(value, time_limit=TIME_LIMIT):
 
 
 def json_scalar(value):
+    """Convert value to float, returning None for non-finite or invalid."""
     if value is None:
         return None
     try:
@@ -305,6 +363,7 @@ def json_scalar(value):
 
 
 def complete_mean(values, expected_count):
+    """Return mean only when all expected values are present and finite."""
     if expected_count <= 0 or len(values) != expected_count:
         return None
     normalized = [json_scalar(value) for value in values]
@@ -313,7 +372,12 @@ def complete_mean(values, expected_count):
     return statistics.fmean(normalized)
 
 
+# ---------------------------------------------------------------------------
+# Solver wrappers: run one config and return a compact result dict.
+# ---------------------------------------------------------------------------
+
 def slim_result(result, status="ok", error=None):
+    """Extract objective, bound, gap, and time into a compact dict."""
     result = result or {}
     return {
         "objective": json_scalar(result.get("objective")),
@@ -326,6 +390,7 @@ def slim_result(result, status="ok", error=None):
 
 
 def solve_config(instance, params):
+    """Run Benders on one instance with given params; return compact result."""
     started = time.perf_counter()
     try:
         raw = sb.solve_instance(instance, params)
@@ -341,6 +406,7 @@ def solve_config(instance, params):
 
 
 def slim_heuristic_result(result, status="ok", error=None):
+    """Like slim_result but also captures heuristic-specific diagnostics."""
     compact = slim_result(result, status=status, error=error)
     result = result or {}
     raw_stats = result.get("stats")
@@ -383,6 +449,7 @@ def slim_heuristic_result(result, status="ok", error=None):
 
 
 def solve_heuristic_config(instance, params):
+    """Run heuristic on one instance with given params; return compact result."""
     started = time.perf_counter()
     try:
         raw = sh.solve_instance(instance, params)
@@ -398,7 +465,17 @@ def solve_heuristic_config(instance, params):
     return slim_heuristic_result(raw, status=status)
 
 
+# ---------------------------------------------------------------------------
+# Reference validation: cross-check Benders and L-shaped exact solutions.
+# ---------------------------------------------------------------------------
+
 def validated_reference_objective(cache, instance_name):
+    """Retrieve and cross-validate Benders/L-shaped reference objectives.
+
+    Both methods must have status 'ok' with near-zero gap, and their
+    objectives must agree within REFERENCE_REL_TOL. Returns the lower
+    (more conservative) objective as the RPD baseline.
+    """
     objectives = []
     for method in ("benders", "lshaped"):
         result = cache.get(cache_identity(method, instance_name))
@@ -445,6 +522,7 @@ def validated_reference_objective(cache, instance_name):
 
 
 def relative_deviation(objective, reference, instance_name, config_name):
+    """Compute RPD (%) = 100 * (obj - ref) / |ref|; reject negative RPD."""
     objective = json_scalar(objective)
     reference = json_scalar(reference)
     if objective is None:
@@ -463,6 +541,10 @@ def relative_deviation(objective, reference, instance_name, config_name):
     return value
 
 
+# ---------------------------------------------------------------------------
+# Excel output: create sheets, write rows, highlight time columns.
+# ---------------------------------------------------------------------------
+
 def prepare_sheet(book, sheet_name, configs, first):
     cols, widths = build_columns(configs)
     sheet = book.active if first else book.create_sheet()
@@ -479,6 +561,7 @@ def prepare_sheet(book, sheet_name, configs, first):
 def append_capped_row(
     sheet, record, time_cols, time_limit=TIME_LIMIT
 ):
+    """Append a row, clamping time columns to [0, time_limit]."""
     record = list(record)
     for column in time_cols:
         record[column - 1] = cap_report_time(
@@ -490,7 +573,12 @@ def append_capped_row(
         sheet.cell(row=row, column=column).fill = YELLOW
 
 
+# ---------------------------------------------------------------------------
+# Panel runners
+# ---------------------------------------------------------------------------
+
 def run_panel(book, sheet_name, scale, label_prefix, configs, first, cache):
+    """Run Benders ablation: solve each instance x config, write to Excel."""
     sheet, cols, widths, time_cols = prepare_sheet(
         book, sheet_name, configs, first)
     book.save(RESULT_FILE)
@@ -536,6 +624,7 @@ def run_panel(book, sheet_name, scale, label_prefix, configs, first, cache):
             gc.collect()
         del inst
         gc.collect()
+    # Append mean row across all instances
     record = ["Mean"]
     for cfg_name, _ in configs:
         record.extend(
@@ -551,6 +640,12 @@ def run_panel(book, sheet_name, scale, label_prefix, configs, first, cache):
 def run_heuristic_stages(
     book, heuristic_cache, reference_cache
 ):
+    """Run heuristic stage ablation on Small + Medium instances.
+
+    For each instance, retrieves the cross-validated exact reference,
+    solves under each heuristic stage config (H0-H3), and records RPD
+    and wall time.
+    """
     summary = {}
     for scale, label_prefix in (("Small", "S"), ("Medium", "M")):
         for display_name, _, _ in HEURISTIC_CONFIGS:
@@ -627,6 +722,7 @@ def run_heuristic_stages(
 
 
 def write_heuristic_summary(book, summary):
+    """Write the heuristic ablation summary sheet (mean RPD and time)."""
     sheet = book.create_sheet("heuristic_ablation")
     columns = [
         "Scale",
